@@ -60,3 +60,8 @@ class BlockManager:
 
     def num_free_blocks(self) -> int:
         return len(self.st)
+
+    def can_allocate(self, num_blocks: int) -> bool:
+        if self.num_free_blocks() >= num_blocks:
+            return True
+        return False
