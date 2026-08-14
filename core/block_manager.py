@@ -32,7 +32,7 @@ class BlockManager:
             return AllocResult(AllocStatus.INSUFFICIENT_SPACE, [])
 
         free_blocks_indices = []
-        for indices in range(num_blocks):
+        for _ in range(num_blocks):
             free_blocks_indices.append(self.st.pop())
 
         if seq_id in self.block_table:
@@ -44,7 +44,19 @@ class BlockManager:
 
 
     def release_blocks(self, seq_id: int) -> AllocStatus:
-        pass
+        # in this func, we take the seq_id and just clear out that key's (seq_id) values from block_table
+
+        if seq_id not in self.block_table:
+            return AllocStatus.FAILURE
+
+        allocated_blocks = self.block_table[seq_id]
+
+        for blocks in allocated_blocks:
+            self.st.append(blocks)
+
+        del self.block_table[seq_id]
+
+        return AllocStatus.SUCCESS
 
     def num_free_blocks(self) -> int:
-        pass
+        return len(self.st)
