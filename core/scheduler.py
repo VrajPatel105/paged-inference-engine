@@ -6,6 +6,13 @@ finished ones, decides what runs each step.
 from core.block_manager import BlockManager
 from core.sequence import Sequence
 import math
+from dataclasses import dataclass
+
+@dataclass
+class SchedulerOutput:
+    prefill_seqs: list[Sequence]
+    decode_seqs: list[Sequence]
+
 
 class Scheduler:
     def __init__(self, block_manager :BlockManager, block_size, max_len, skip_threshold=3, lookahead=5):
@@ -24,6 +31,9 @@ class Scheduler:
         self._allocate_decode()
         self._admit_waiting()
         return self._build_output()
+
+    def add_request(self, seq: Sequence):
+        self.waiting_requests.append(seq)
 
 
     def _free_finished(self):   
@@ -87,4 +97,15 @@ class Scheduler:
         
 
     def _build_output(self):
-        pass
+        # this builds output for the model runner which simply decides if currnt one is a prefill or decode step
+
+        prefill_seq = []
+        decode_seq = []
+
+        for sequences in self.running_requests:
+            if(len(sequences.token_ids) == len(sequences.prompt_token_ids)):
+                prefill_seq.append(sequences)
+            else:
+                decode_seq.append(sequences)
+
+        return SchedulerOutput(prefill_seqs=prefill_seq, decode_seqs=decode_seq)
