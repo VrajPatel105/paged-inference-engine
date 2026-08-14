@@ -30,10 +30,10 @@ class Scheduler:
         # in this function, we check if there are any running requests that needs their blocks to be freed up -> this has two conditions, either we have <EOS> id or max_length reached. This is decided from sequence class
 
         running_requests_copy = self.running_requests.copy()
-        for requests in running_requests_copy:
-            if requests.is_finished:
-                self.block_manager.release_blocks(requests.seq_id)
-                self.running_requests.remove(requests)
+        for sequences in running_requests_copy:
+            if sequences.is_finished:
+                self.block_manager.release_blocks(sequences.seq_id)
+                self.running_requests.remove(sequences)
 
 
     def _allocate_decode(self):
@@ -46,9 +46,45 @@ class Scheduler:
             if block_needed > current_block_count:
                 self.block_manager.allocate(sequences.seq_id, block_needed-current_block_count)
             
+
+# Normal mode: otherwise, walk the queue checking up to self.lookahead candidates. For each, compute needed blocks, check can_allocate. If it fits: allocate, admit, move it. If not: increment its skip count, move to the next candidate (up to the lookahead cap).
+
             
     def _admit_waiting(self):
-        pass
+        # here instead of FCFS policy, we are implementing a lookahead window threshold with a per sequence threshold.
+        # So, we look at the first n (lookhead) items from waiting list and iterate over to check which one will be able to fit in the free memory currently available
+        # based on that, the ones that were not able to fit will have their skip_count counter increase by 1. After a threshold (we are taking threshold of 3 here),
+        # if a block has excedeed it's skip_count's count by threshold, then we will stop all the admission of smaller sequences and only focus on the one that has exceeded the threshold
+        # until that exceeded sequence is not allocated, we will not move ahead for others. 
+        # by implementing the lookahead logic, we prevent the starvation. (which is why this i implemented teh lookhead logic at the first place )
+
+        if not self.waiting_requests:
+            return
+        
+        # First : Blocking Mode
+        front_sequence = self.waiting_requests[0]
+
+        if self.skip_counts.get(front_sequence.seq_id, 0) >= self.skip_threshold:
+            needed_blocks = math.ceil(len(front_sequence.prompt_token_ids) / self.block_size)
+            if self.block_manager.can_allocate(needed_blocks):
+                self.block_manager.allocate(front_sequence.seq_id, needed_blocks)
+                self.running_requests.append(front_sequence)
+                self.waiting_requests.remove(front_sequence)
+                self.skip_counts.pop(front_sequence.seq_id, None)
+            return
+        # 2. Second: else, Normal Mode
+        else:
+            for sequences in self.waiting_requests[:self.lookahead]:
+                needed_blocks = math.ceil(len(sequences.prompt_token_ids) / self.block_size)
+                if self.block_manager.can_allocate(needed_blocks):
+                    self.block_manager.allocate(sequences.seq_id, needed_blocks)
+                    self.running_requests.append(sequences)
+                    self.waiting_requests.remove(sequences)
+                    self.skip_counts.pop(sequences.seq_id, None)
+                else:
+                    current_count = self.skip_counts.get(sequences.seq_id, 0)
+                    self.skip_counts[sequences.seq_id] = current_count + 1
+        
 
     def _build_output(self):
         pass
