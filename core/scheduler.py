@@ -41,7 +41,7 @@ class Scheduler:
 
         running_requests_copy = self.running_requests.copy()
         for sequences in running_requests_copy:
-            if sequences.is_finished:
+            if sequences.is_finished or len(sequences.token_ids) >= self.max_len:
                 self.block_manager.release_blocks(sequences.seq_id)
                 self.running_requests.remove(sequences)
 
