@@ -107,47 +107,6 @@ def flash_attention_kernel(
     l_mask = offs_m < seq_len
     tl.store(l_ptrs, final_l, mask=l_mask)
 
-#This kernel beolw precomputes D_i = rowsum(dO_i . O_i) for every row, once, up front. 
-# D_i is the per-row scalar the softmax-Jacobian shortcut needs (dS = P  . (dP − D)) 
-# to avoid ever materializing the full Jacobian. Computing it here — from the fully-materialized O and dO 
-# which means the block loop later can just load D_i per row instead of recomputing it inside every block iteration.
-
-@triton.jit
-def preprocess_kernel(
-    O, dO, D,
-    stride_ob, stride_oh, stride_os, stride_od,
-    stride_dob, stride_doh, stride_dos, stride_dod,
-    stride_Db, stride_Dh, stride_Ds,
-    seq_len,
-    head_dim: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-):
-    
-    # 1. get pid_batch, pid_head, pid_m from program_id
-    pid_batch = tl.program_id(axis=0)
-    pid_head = tl.program_id(axis=1)
-    pid_m = tl.program_id(axis=2)
-    # 2. build offs_m, offs_d (same as forward's setup)
-    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    offs_d = tl.arange(0, head_dim)
-    # 3. build o_ptrs and do_ptrs (same pattern as q_ptrs in forward)
-    o_ptrs = O + pid_batch * stride_ob + pid_head * stride_oh + offs_m[:, None] * stride_os + offs_d[None, :] * stride_od
-    o_mask = offs_m[:, None] < seq_len
-    do_ptrs = dO + pid_batch * stride_dob + pid_head * stride_doh + offs_m[:, None] * stride_dos + offs_d[None, :] * stride_dod
-    do_mask = offs_m[:, None] < seq_len
-    # 4. load o_tile and do_tile (masked, other=0.0)
-    o_tile = tl.load(o_ptrs, mask=o_mask, other=0.0)
-    do_tile = tl.load(do_ptrs, mask=do_mask, other=0.0)
-    # 5. elementwise multiply, then tl.sum along axis=1 to get D_row (shape BLOCK_M,)
-    prod = o_tile * do_tile
-    D_row = tl.sum(prod, axis=1)    
-    # 6. build D_ptrs (1D, like your fixed l_ptrs — no offs_d needed)
-    D_ptrs = D + pid_batch * stride_Db + pid_head * stride_Dh + offs_m * stride_Ds
-    D_mask = offs_m < seq_len
-    # 7. store D_row into D_ptrs, masked
-    tl.store(D_ptrs, D_row, mask=D_mask)
-
-
 
 def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
 
@@ -176,26 +135,6 @@ def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor):
 
     return O, L
 
-def preprocess_kernel_forward(O: torch.Tensor, dO: torch.Tensor):
-
-    batch, num_heads, seq_len, head_dim = O.shape
-    assert O.shape == dO.shape, "Q, K, V shape mismatch"
-    assert O.is_cuda and dO.is_cuda, "Not CUDA Tensors -_-"
-
-    D = torch.empty(batch, num_heads, seq_len, device=DEVICE, dtype=torch.float16)
-
-    BLOCK_M = 64
-    grid = (batch, num_heads, triton.cdiv(seq_len, BLOCK_M))
-
-    preprocess_kernel[grid](
-    O, dO, D,
-    O.stride(0), O.stride(1), O.stride(2), O.stride(3),
-    dO.stride(0), dO.stride(1), dO.stride(2), dO.stride(3),
-    D.stride(0), D.stride(1), D.stride(2),
-    seq_len, head_dim, BLOCK_M,
-    )
-
-    return D
 
 def run_fa_fwd(batch, heads, seq_len, head_dim):
 
