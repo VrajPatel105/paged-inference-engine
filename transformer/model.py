@@ -4,21 +4,8 @@ import math
 from config import configurations
 
 import sys
-sys.path.append("/mnt/c/dev/projects/cpp-gpu-inference/5. flash-attention")
 
-from flash_attention import FlashAttentionFunction
-
-# Implementation pipeline: 
-# Embedding 
-# Positional Encoding 
-# Multi-Head Attention 
-# Add & Norm
-# Feedforward
-# Add & Norm 
-# stack into Encoder layer
-#  Decoder (with cross-attention)
-#  final Linear + Softmax.
-
+from kernels.flash_attention import FlashAttentionFunction
 
 # Embeddings class
 class Embedding(nn.Module):
@@ -54,9 +41,8 @@ class PositionalEncoding(nn.Module):
 
         self.register_buffer('pe', positional_encoded_tensor.unsqueeze(0))
 
-    def forward(self,x):
-        seq_len = x.shape[1]
-        x = x + self.pe[:, :seq_len, :]
+    def forward(self, x, position_ids):
+        x = x + self.pe[0, position_ids, :]
         return x
 
 
@@ -181,39 +167,6 @@ class ResidualConnections(nn.Module):
       x = x + sublayer
       return self.norm(x)
 
-# Encoder class
-'''
-What we have to do for encoder class:
-get the tensor x that is already positional encoded.
-take the tensor x and have it pass through the multiheadattention block
-then add the output from multiheadattention block and the initial data x which is obtained by the residualconnections block
-and then apply layer norm on this.
-now we have x tensor
-then apply FNN layer  -> x tensor to x_tensor
-then again apply add & norm by residual connections and layernorm.
-Now we have our final tensor x ready.
-'''
-
-class Encoder(nn.Module):
-    def __init__(self, multi_head_attention: MultiHeadAttention, feed_forward: FeedForward, d_model):
-        super().__init__()
-        self.d_model = d_model
-        self.multi_head_attention = multi_head_attention
-        self.residual_connection = nn.ModuleList([ResidualConnections(self.d_model) for _ in range(2)])
-        self.feed_forward = feed_forward
-
-    def forward(self,x, src_mask):
-        sub_layer, _ = self.multi_head_attention(x,x,x,src_mask) # x q k v
-        x = self.residual_connection[0](x, sub_layer)
-        sub_layer = self.feed_forward(x)
-        x = self.residual_connection[1](x, sub_layer)
-
-        # we can also write the above implementation as this : 
-        #   x = self.residual_connection[0](x, lambda x: self.multi_head_attention(x, x, x, src_mask))
-        #   x = self.residual_connection[1](x, self.feed_forward)
-
-        return x
-
 
 # Decoder Class
 
@@ -240,28 +193,20 @@ The second type of mask is :
 '''
 class Decoder(nn.Module):
 
-    def __init__(self, masked_attention : MultiHeadAttention, cross_attention: MultiHeadAttention, feed_forward: FeedForward, d_model):
+    def __init__(self, masked_attention: MultiHeadAttention, feed_forward: FeedForward, d_model):
         super().__init__()
         self.d_model = d_model
         self.masked_attention = masked_attention
-        self.cross_attention = cross_attention
-        self.residual_connection = nn.ModuleList([ResidualConnections(self.d_model) for _ in range(3)])
+        self.residual_connection = nn.ModuleList([ResidualConnections(self.d_model) for _ in range(2)])
         self.feed_forward = feed_forward
 
-    # KV CACHE: added sa_cache and ca_cache params (None during training)
-    def forward(self,x, enc_output, src_mask, tgt_mask, sa_cache=None, ca_cache=None):
-        # KV CACHE: pass and receive self-attention cache
-        sub_layer, new_sa_cache = self.masked_attention(x,x,x,tgt_mask, kv_cache=sa_cache) 
+    def forward(self, x, tgt_mask, sa_cache=None):
+        sub_layer, new_sa_cache = self.masked_attention(x, x, x, tgt_mask, kv_cache=sa_cache)
         x = self.residual_connection[0](x, sub_layer)
-        # KV CACHE: pass and receive cross-attention cache
-        sub_layer, new_ca_cache = self.cross_attention(x, enc_output, enc_output, src_mask, kv_cache=ca_cache) 
-        x = self.residual_connection[1](x, sub_layer)
         sub_layer = self.feed_forward(x)
-        x = self.residual_connection[2](x, sub_layer)
+        x = self.residual_connection[1](x, sub_layer)
 
-        # KV CACHE: return both caches alongside output
-        return x, new_sa_cache, new_ca_cache
-
+        return x, new_sa_cache
 
 class ProjectionLayer(nn.Module):
     def __init__(self, d_model, vocab_size):
@@ -273,67 +218,22 @@ class ProjectionLayer(nn.Module):
     def forward(self,x):
 
         return torch.log_softmax(self.linear_layer(x), dim=-1)
-    #The reason is that during training you'd use `nn.NLLLoss` (negative log likelihood) which expects log probabilities as input,
-    # and numerically it's more stable than raw softmax followed by log. If you use `nn.CrossEntropyLoss` instead, 
-    # skip the softmax entirely because CrossEntropyLoss applies it internally.
-
-# Combined Transformer class
-'''Here's my previously written transfromer class below'''
-# class Transformer(nn.Module):
-
-#     def __init__(self, embeddings, pe, encoder_blocks: nn.ModuleList, decoder_blocks: nn.ModuleList, projection_layer):
-#         super().__init__()
-#         self.embeddings = embeddings
-#         self.pe = pe
-#         self.encoder_blocks = encoder_blocks
-#         self.decoder_blocks = decoder_blocks
-#         self.projection_layer = projection_layer
-    
-#     def forward(self,src_data, src_vocab_size, tgt_data, tgt_vocab_size, src_mask, tgt_mask, d_model):
-        
-#         src_embeddings = Embedding(src_vocab_size, d_model)  # language 1 vocab
-#         tgt_embeddings = Embedding(tgt_vocab_size, d_model)  # Language 2 vocab
-
-#         src_pe_embeddings = self.pe(src_embeddings)
-#         tgt_pe_embeddings = self.pe(tgt_embeddings)
-
-
-#         for block in self.encoder_blocks:
-#             src_pe_embeddings =  block(src_pe_embeddings, src_mask)
-#         encoder_output = src_pe_embeddings
-
-#         for block in self.decoder_blocks:
-#             tgt_pe_embeddings = block(tgt_pe_embeddings, encoder_output, src_mask, tgt_mask)
-#         decoder_output = tgt_pe_embeddings
-
-#         return self.projection_layer(decoder_output) # we return the logits directly to the loss function
-
-# final transformer class
 
 class Transformer(nn.Module):
 
-    def __init__(self, src_embed: Embedding, tgt_embed: Embedding, src_pe: PositionalEncoding, 
-                 tgt_pe : PositionalEncoding, encoder_blocks: nn.ModuleList, decoder_blocks: nn.ModuleList, 
-                 projection_layer: ProjectionLayer):
+    def __init__(self, tgt_embed: Embedding, tgt_pe: PositionalEncoding, 
+                 decoder_blocks: nn.ModuleList, projection_layer: ProjectionLayer):
         super().__init__()
-        self.src_embed = src_embed
         self.tgt_embed = tgt_embed
-        self.src_pe = src_pe
         self.tgt_pe = tgt_pe
-        self.encoder_blocks = encoder_blocks
         self.decoder_blocks = decoder_blocks
         self.projection_layer = projection_layer
     
-    def forward(self, src, tgt, src_mask, tgt_mask):
-        src = self.src_pe(self.src_embed(src))
-        tgt = self.tgt_pe(self.tgt_embed(tgt))
-
-        for block in self.encoder_blocks:
-            src = block(src, src_mask)
+    def forward(self, tgt, tgt_mask, position_ids):
+        tgt = self.tgt_pe(self.tgt_embed(tgt), position_ids)
         
         for block in self.decoder_blocks:
-            # KV CACHE: during training no cache — ignore returned caches
-            tgt, _, _ = block(tgt, src, src_mask, tgt_mask)
+            tgt, _ = block(tgt, tgt_mask)
         
         return self.projection_layer(tgt)
     
@@ -347,31 +247,22 @@ def build_transformer(configurations):
     d_model = configurations['d_model']
     num_heads = configurations['num_heads']
     N = configurations['num_blocks']
-    src_max_seq_len = configurations['src_max_seq_len']
     tgt_max_seq_len = configurations['tgt_max_seq_len']
-    src_vocab_size = configurations['src_vocab_size']
     tgt_vocab_size = configurations['tgt_vocab_size']
 
     # embeddings 
-    src_embed = Embedding(d_model, src_vocab_size)
     tgt_embed = Embedding(d_model, tgt_vocab_size)
 
     # positional encoding 
-    src_pe = PositionalEncoding(d_model, src_max_seq_len)
     tgt_pe = PositionalEncoding(d_model, tgt_max_seq_len)
-
-    # Encoder blocks -> needs a modulelist as parameters
-    encoder_block_mdlist = nn.ModuleList([
-        Encoder(MultiHeadAttention(d_model, num_heads), FeedForward(d_model), d_model)
-    for _ in range(N)] )
+    
     
     decoder_block_mdlist = nn.ModuleList([
-        Decoder(MultiHeadAttention(d_model, num_heads, flash_attention=True),MultiHeadAttention(d_model, num_heads, is_cross_attention=True), FeedForward(d_model), d_model)
+        Decoder(MultiHeadAttention(d_model, num_heads, flash_attention=True), FeedForward(d_model), d_model)
     for _ in range(N)] )
     
     projection_layer = ProjectionLayer(d_model, tgt_vocab_size)
 
-    transformer = Transformer(src_embed, tgt_embed, src_pe, tgt_pe, 
-                              encoder_block_mdlist, decoder_block_mdlist, projection_layer)
+    transformer = Transformer(tgt_embed, tgt_pe, decoder_block_mdlist, projection_layer)
     
     return transformer
