@@ -6,7 +6,7 @@ pass -- FlashAttention-2 + INT8 kernels underneath.
 from core.block_manager import BlockManager
 from core.scheduler import Scheduler
 from core.sequence import Sequence
-from core.config import configurations
+from core.config import core_configurations
 import queue
 from collections import deque # for the new_request dequeue
 import torch
@@ -18,9 +18,9 @@ def run(q):
 
     new_requests = deque()
 
-    block_manager_obj = BlockManager(configurations['num_blocks'], configurations['block_size'])
+    block_manager_obj = BlockManager(core_configurations['num_blocks'], core_configurations['block_size'])
 
-    scheduler_obj = Scheduler(block_manager_obj, configurations['block_size'], configurations['max_len'], skip_threshold=configurations['scheduler_skip_threshold'], lookahead=configurations['scheduler_lookahead'])
+    scheduler_obj = Scheduler(block_manager_obj, core_configurations['block_size'], core_configurations['max_len'], skip_threshold=core_configurations['scheduler_skip_threshold'], lookahead=core_configurations['scheduler_lookahead'])
 
     seq_cnt = 0  # unique count for each new sequence id (new user)
 
@@ -56,10 +56,11 @@ def run(q):
         # lets first build the mask itself . shape : [total_tokens, total_tokens]
 
         sequence_id = []
-        length = []
+        length = [] # can be reused as q_len_per_seq for FA kernel
         offset = []
         position_ids = []
         pos_seq_id = []
+        kv_len_per_seq = [] # required for FA kernel
         offset_cnt = 0
 
         # main 1d tensor that will be flat token
@@ -73,6 +74,7 @@ def run(q):
             offset_cnt = offset_cnt + len(seq.prompt_token_ids) # increasing the count for the next seq's starting pos to be recorded
             pos_seq_id.extend([seq.seq_id] * num_new_token)
             position_ids.extend(range(len(seq.token_ids)))
+            kv_len_per_seq.append(num_new_token)
             flat_tokens.extend(seq.prompt_token_ids)
 
         # now the decode loop
@@ -84,6 +86,7 @@ def run(q):
             offset_cnt = offset_cnt + num_new_token
             pos_seq_id.extend([seq.seq_id] * num_new_token)
             position_ids.extend([len(seq.token_ids)])
+            kv_len_per_seq.append(len(seq.token_ids) + 1)
             flat_tokens.append(seq.token_ids[-1])
 
         # converting all the lists to tensors since we are going to send it to forward pass
@@ -105,7 +108,7 @@ def run(q):
         # Final mask: both conditions must hold
         tgt_mask = same_seq & not_future
 
-        logits = model(flat_tokens, tgt_mask, position_ids)
+        logits = model(flat_tokens, tgt_mask, position_ids, block_manager_obj.block_table, length, kv_len_per_seq, sequence_id) # adding sequence_id as well because we need it for computing the num_blocks_per_seq in attention module by making sure that the sequence ids are exactly in order
 
         # the logits now contain the per sequence output. logits shape : [total_tokens, vocab_size]
         # we only want the last row that was contributed to the sequence and then append it to that particular seq_id's sequence
