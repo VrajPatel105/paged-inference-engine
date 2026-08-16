@@ -10,6 +10,9 @@ from core.config import configurations
 import queue
 from collections import deque # for the new_request dequeue
 import torch
+from transformer.model import build_transformer
+from transformer.config import transformer_configurations
+model = build_transformer(transformer_configurations)
 
 def run(q):
 
@@ -89,6 +92,7 @@ def run(q):
         offset = torch.tensor(offset, dtype=torch.int32)
         position_ids = torch.tensor(position_ids, dtype=torch.int32)
         pos_seq_id = torch.tensor(pos_seq_id, dtype=torch.int32)
+        flat_tokens = torch.tensor(flat_tokens, dtype=torch.int32)
 
         # now finally building the main mask using position_ids and pos_seq_id (insstead of using two loops which we could, we are just using broadcasting)
         
@@ -101,3 +105,34 @@ def run(q):
         # Final mask: both conditions must hold
         tgt_mask = same_seq & not_future
 
+        logits = model(flat_tokens, tgt_mask, position_ids)
+
+        # the logits now contain the per sequence output. logits shape : [total_tokens, vocab_size]
+        # we only want the last row that was contributed to the sequence and then append it to that particular seq_id's sequence
+        # one row of logits looks like : [seq_a, [0.1,0.4,0.4,0.1]] the list is probabilities
+        # but if we not here, in logits, we only want that particular sequence's last logit (row)
+        # so we can use (offset[k] + length[k] - 1) to exactly reach to each last indicees of each unique row
+        # so we just build a matrix of the list of last indices to extract and then we can iterate over logits to get those particular rows itself.
+        num_sequences = len(prefill_seq) + len(decode_seq)
+        last_indices = []
+        for i in range(num_sequences):
+            last_indices.append(offset[i] + length[i] - 1)
+
+        # now we have exact index values of tokens that we need 
+        last_seq_logits = logits[last_indices] # we directly index into the 2d tensor to get those rows rather than running a loop 
+        # now converting each list of probabilities to the max probabitliy
+        new_tokens = torch.argmax(last_seq_logits, dim=-1).tolist() # converting tensor back to py list since it's more easier to iterate further on when we write the new tokens into sequences
+        # now adding the new tokens to both prefill and decode's sequences' metadata.
+        # we will again get two loops same logic as what we ddi before to make it less confusing
+
+        #prefill 
+        current_index = 0
+        for seq in prefill_seq:
+            seq.token_ids.append(new_tokens[current_index])
+            current_index += 1
+
+        for seq in decode_seq:
+            seq.token_ids.append(new_tokens[current_index])
+            current_index += 1
+
+        
