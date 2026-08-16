@@ -1,5 +1,5 @@
 # updated for the larger 200k-row Tatoeba dataset
-configurations = {
+transformer_configurations = {
     'd_model' : 512,
     'num_heads' : 8,
     'num_blocks' : 6,
