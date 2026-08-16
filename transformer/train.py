@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import pandas as pd
+from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader, random_split
 import torch.optim as optim
 from tqdm import tqdm
@@ -10,13 +10,9 @@ from transformer.tokenizer import Tokenizer
 from transformer.config import transformer_configurations
 
 
-path = transformer_configurations['path']
-
-
-def load_data(path):
-    custom_cols = ["col1", "english_sentence", "col2", "german_sentence"]
-    data = pd.read_csv(path, sep='\t', header=None, names=custom_cols, encoding='utf-8')
-    return data['english_sentence'].tolist()
+def load_data():
+    dataset = load_dataset("roneneldan/TinyStories", split="train[:20000]")
+    return dataset["text"]
 
 
 class TextDataset(Dataset):
@@ -191,7 +187,7 @@ def generate(model, prompt, tok, device, max_len):
 
 
 if __name__ == "__main__":
-    sentences = load_data(path)
+    sentences = load_data()
     tok = Tokenizer()
     tok.build_vocab(sentences)
 
@@ -214,4 +210,4 @@ if __name__ == "__main__":
     model = model.to(device)
 
     train(model, train_loader, val_loader, criterion, optimizer, device, transformer_configurations)
-    print(generate(model, "I am hungry", tok, device, max_len=20))
+    print(generate(model, "Once upon a time", tok, device, max_len=50))
