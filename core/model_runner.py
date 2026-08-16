@@ -15,7 +15,7 @@ from transformer.config import transformer_configurations
 from transformer.load_checkpoint import load_trained_weights
 model = load_trained_weights('transformer/decoder_only.pt')
 
-def run(q):
+def run(q, tok, output_state=None, window_map=None):
 
     new_requests = deque()
 
@@ -36,8 +36,10 @@ def run(q):
 
         # convert each entry from new_requests into Sequence obj and pass to scheduler to add request
         while new_requests:
-            curr_req = new_requests.popleft()
+            window_id, curr_req = new_requests.popleft()
             scheduler_obj.add_request(Sequence(seq_id=seq_cnt, prompt_token_ids=curr_req)) # is_finished is False by default, so we are not passing it in this call
+            if window_map is not None:
+                window_map[seq_cnt] = window_id
             seq_cnt += 1
 
         output = scheduler_obj.schedule()
@@ -145,6 +147,9 @@ def run(q):
             current_index += 1
 
         for seq in prefill_seq + decode_seq:
-            print(f"seq {seq.seq_id}: {seq.token_ids}")
+            print(f"seq {seq.seq_id}: {tok.decode_sentence(seq.token_ids)}")
 
-        
+        if output_state is not None:
+            for seq in prefill_seq + decode_seq:
+                win_id = window_map.get(seq.seq_id, seq.seq_id) if window_map is not None else seq.seq_id
+                output_state[win_id] = tok.decode_sentence(seq.token_ids)
