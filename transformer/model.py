@@ -49,7 +49,7 @@ class PositionalEncoding(nn.Module):
 # Multi Head attention class
 class MultiHeadAttention(nn.Module):
 
-    def __init__(self, d_model, num_heads, flash_attention=False, is_cross_attention=False):
+    def __init__(self, d_model, num_heads):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -59,74 +59,74 @@ class MultiHeadAttention(nn.Module):
         self.W_k = nn.Linear(d_model, d_model)
         self.W_v = nn.Linear(d_model, d_model)
         self.W_o = nn.Linear(d_model, d_model)
-        self.flash_attention = flash_attention
-        self.is_cross_attention = is_cross_attention
-
-    @staticmethod
-    def attention(q,k,v,d_k,mask):
+        self.block_size = core_configurations['block_size']
+        self.num_blocks = core_configurations['num_blocks']
+        self.register_buffer('k_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k)) # buiding the actual tensors that will be used for kv cache in FA
+        self.register_buffer('v_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k))
         
-        attention_scores = ((q @ k.transpose(-2,-1) ) / math.sqrt(d_k))
 
-        if mask is not None:
-            attention_scores.masked_fill_(mask == 0, -1e9)
-        
-        attention_scores = torch.softmax(attention_scores, dim=-1)
+    def forward(self, q, k, v, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id):
 
-        return attention_scores @ v  
+        num_sequences = len(sequence_id)
+        total_tokens = q.size(0)
 
-    # added kv_cache parameter
-    def forward(self, q, k, v, mask, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, kv_cache=None):
-        # compute  the num_blocks_per_seq and block_size from config
-        block_size = core_configurations['block_size']
+        # 1. Project
+        q = self.W_q(q)
+        k = self.W_k(k)
+        v = self.W_v(v)
+
+        # 2. Head-split: [total_tokens, num_heads, d_k]
+        q = q.view(total_tokens, self.num_heads, self.d_k)
+        k = k.view(total_tokens, self.num_heads, self.d_k)
+        v = v.view(total_tokens, self.num_heads, self.d_k)
+
+        # 3. Write this step's new K/V into the paged cache pool
+        for i in range(total_tokens):
+            seq_id = pos_seq_id[i].item()
+            p = position_ids[i].item()
+
+            block_idx_in_seq = p // self.block_size
+            slot_in_block = p % self.block_size
+
+            block_number = block_table[seq_id][block_idx_in_seq]
+
+            self.k_cache[block_number, :, slot_in_block, :] = k[i]
+            self.v_cache[block_number, :, slot_in_block, :] = v[i]
+
+        # 4. num_blocks_per_seq, derived from block_table via sequence_id (correct order)
         num_blocks_per_seq = []
-        # upon iterating over sequence_id it makes sure that we only get the size of blocks for the sequences that are currently being processed. otherwise, the block_manager might have random prefill and decode sequences all over which might mess up our logic.
-        for seq in sequence_id:
-            num_blocks_per_seq.append(len(block_table[seq]))
+        for seq_id in sequence_id:
+            num_blocks_per_seq.append(len(block_table[seq_id.item()]))
+        num_blocks_per_seq = torch.tensor(num_blocks_per_seq, dtype=torch.int32, device=q.device)
 
-        batch_size = q.size(0)
-        q_len = q.size(1)
-        k_len = k.size(1)
-        
-        self.q = self.W_q(q) # -> q @ W_q
-        self.k = self.W_k(k) # -> k @ W_k
-        self.v = self.W_v(v) # -> v @ W_v
+        # 5. Pad flat Q into [num_sequences, num_heads, max_q_len, head_dim]
+        max_q_len = int(length.max().item())
+        Q_padded = torch.zeros(num_sequences, self.num_heads, max_q_len, self.d_k, device=q.device, dtype=q.dtype)
 
-        
-        # so till now the shape is batch_size, seq_len, d_model for all q,k,v
-        # now we need to convert to another tensor shape which is :
-        # batch_size,seq_len,d_model => batch_size,seq_len, num_heads, d_k -> batch_size, num_heads, seq_len,d_k  
-        q = q.view(batch_size, q_len, self.num_heads, self.d_k).transpose(1, 2)
-        k = k.view(batch_size, k_len, self.num_heads, self.d_k).transpose(1, 2)
-        v = v.view(batch_size, k_len, self.num_heads, self.d_k).transpose(1, 2)
+        for k_idx in range(num_sequences):
+            start = offset[k_idx].item()
+            this_len = length[k_idx].item()
+            # q[start:start+this_len] is [this_len, num_heads, d_k] -> needs [num_heads, this_len, d_k]
+            Q_padded[k_idx, :, :this_len, :] = q[start:start + this_len].transpose(0, 1)
 
-        if kv_cache is not None:
-            if self.is_cross_attention:
-                k, v = kv_cache       
-            else:
-                old_k, old_v = kv_cache
-                k = torch.cat([old_k, k], dim=2)
-                v = torch.cat([old_v, v], dim=2)
+        # 6. Kernel call : K/V come from the pool (self.k_cache/self.v_cache), not from this step's k/v directly
+        O, _ = FlashAttentionFunction.apply(
+            Q_padded, self.k_cache, self.v_cache,
+            q_len_per_seq, block_table, num_blocks_per_seq, self.block_size, kv_len_per_seq
+        )
 
-        new_cache = (k, v)
+        # 7. Unpad O back to flat [total_tokens, num_heads, d_k]
+        O_flat = torch.zeros(total_tokens, self.num_heads, self.d_k, device=q.device, dtype=O.dtype)
+        for k_idx in range(num_sequences):
+            start = offset[k_idx].item()
+            this_len = length[k_idx].item()
+            O_flat[start:start + this_len] = O[k_idx, :, :this_len, :].transpose(0, 1)
 
-        if self.flash_attention and kv_cache is None:
-            # 1. if flash_attention = true, then we firstly cast the k q v to fp16 cuz our flash attention class is casted to fp16
-            q = q.to(torch.float16)
-            k = k.to(torch.float16)
-            v = v.to(torch.float16)
-            # 2. calling the flashattention main class
-            O = FlashAttentionFunction.apply(q, k, v)
-            
-            # 3. cast results back to fp32 again : (
-            attention_scores = O.to(torch.float32)
-            
-        else: 
-            attention_scores = self.attention(q, k, v, self.d_k, mask=mask)
+        # 8. Output projection
+        attention_scores = O_flat.to(torch.float32)
+        x = self.W_o(attention_scores.reshape(total_tokens, self.d_model))
 
-        x = self.W_o(attention_scores.transpose(1, 2).contiguous().view(batch_size, q_len, self.d_model))
-
-        # return new_cache as well
-        return x, new_cache
+        return x
 
 
 # Feed forward class
@@ -173,30 +173,8 @@ class ResidualConnections(nn.Module):
       x = x + sublayer
       return self.norm(x)
 
-
 # Decoder Class
 
-'''
-We have two types of mask used here :
-1. Padding mask (src_mask) : this is used to ignore the padding tokens in input sentences.  
-    Because not all of the sentences are the same length, we need to add padding tokens based on the max_seq_len
-    So, when calculating the attention, the padding tokens are ignored
-
-# 1 = real token, 0 = padding
-src_mask = [1, 1, 0, 0]
-
-Then in attention, wherever mask is 0, you set the score to `-inf`. After softmax, `e^(-inf) = 0`, so those positions get zero attention weight. They're completely ignored.
-
-'''
-'''
-The second type of mask is : 
-2. Casual mask (tgt_mask): this is done during training when the decoder initial attention block is able to see all the future tokens in a sequence, we have to stop it.
-    So we simply add a mask that makes those values infinity and turns them to 0 with softmax applied
-
-    That's `torch.tril` Function used for the lower triangular. 
-    Wherever it's 0, set to `-inf` before softmax. Same exact mechanism as padding mask, different shape and purpose.
-
-'''
 class Decoder(nn.Module):
 
     def __init__(self, masked_attention: MultiHeadAttention, feed_forward: FeedForward, d_model):
@@ -206,13 +184,13 @@ class Decoder(nn.Module):
         self.residual_connection = nn.ModuleList([ResidualConnections(self.d_model) for _ in range(2)])
         self.feed_forward = feed_forward
 
-    def forward(self, x, tgt_mask, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, sa_cache=None):
-        sub_layer, new_sa_cache = self.masked_attention(x, x, x, tgt_mask, block_table, q_len_per_seq, kv_len_per_seq, sequence_id,  kv_cache=sa_cache)
+    def forward(self, x, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id):
+        sub_layer = self.masked_attention(x, x, x, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id)
         x = self.residual_connection[0](x, sub_layer)
         sub_layer = self.feed_forward(x)
         x = self.residual_connection[1](x, sub_layer)
 
-        return x, new_sa_cache
+        return x
 
 class ProjectionLayer(nn.Module):
     def __init__(self, d_model, vocab_size):
@@ -235,19 +213,15 @@ class Transformer(nn.Module):
         self.decoder_blocks = decoder_blocks
         self.projection_layer = projection_layer
     
-    def forward(self, tgt, tgt_mask, position_ids, block_table, q_len_per_seq, kv_len_per_seq, sequence_id):
+    def forward(self, tgt, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id):
         # compute the num_blocks_per_seq
         tgt = self.tgt_pe(self.tgt_embed(tgt), position_ids)
         
         for block in self.decoder_blocks:
-            tgt, _ = block(tgt, tgt_mask, block_table, q_len_per_seq, kv_len_per_seq, sequence_id)
-        
+            tgt = block(tgt, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id)        
         return self.projection_layer(tgt)
     
 
-# Now we have all these classes built but nothing that assembles them. So, we will make a `build_transformer` Function. It is just a regular 
-# Python function that takes configuration parameters like `d_model`, `num_heads`, `num_blocks`, `vocab_size` 
-# and creates one instance of every class you've built, wires them together, and returns a ready-to-use Transformer object.
 
 def build_transformer(configurations):
 # this function needs to have objects of classes: embeddings, PE, encoder_blocks, decoder_blocks and projection_Layer
