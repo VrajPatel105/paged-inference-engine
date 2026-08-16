@@ -4,7 +4,7 @@ from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader, random_split
 import torch.optim as optim
 from tqdm import tqdm
-
+import pickle
 from transformer.model import Embedding, PositionalEncoding, FeedForward, ResidualConnections, ProjectionLayer
 from transformer.tokenizer import Tokenizer
 from transformer.config import transformer_configurations
@@ -190,6 +190,8 @@ if __name__ == "__main__":
     sentences = load_data()
     tok = Tokenizer()
     tok.build_vocab(sentences)
+    with open('transformer/tokenizer.pkl', 'wb') as f:
+        pickle.dump(tok, f)
 
     max_len = transformer_configurations['max_len']
 

@@ -98,6 +98,7 @@ class MultiHeadAttention(nn.Module):
         for seq_id in sequence_id:
             num_blocks_per_seq.append(len(block_table[seq_id.item()]))
         num_blocks_per_seq = torch.tensor(num_blocks_per_seq, dtype=torch.int32, device=q.device)
+        
 
         # 5. Pad flat Q into [num_sequences, num_heads, max_q_len, head_dim]
         max_q_len = int(length.max().item())
@@ -122,7 +123,7 @@ class MultiHeadAttention(nn.Module):
 
 
         # 6. Kernel call : K/V come from the pool (self.k_cache/self.v_cache), not from this step's k/v directly
-        O, _ = FlashAttentionFunction.apply(
+        O = FlashAttentionFunction.apply(
             Q_padded, self.k_cache, self.v_cache,
             q_len_per_seq, block_table_tensor, num_blocks_per_seq, self.block_size, kv_len_per_seq
         )
@@ -251,7 +252,7 @@ def build_transformer(configurations):
     
     
     decoder_block_mdlist = nn.ModuleList([
-        Decoder(MultiHeadAttention(d_model, num_heads, flash_attention=True), FeedForward(d_model), d_model)
+        Decoder(MultiHeadAttention(d_model, num_heads), FeedForward(d_model), d_model)
     for _ in range(N)] )
     
     projection_layer = ProjectionLayer(d_model, tgt_vocab_size)
