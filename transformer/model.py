@@ -109,10 +109,22 @@ class MultiHeadAttention(nn.Module):
             # q[start:start+this_len] is [this_len, num_heads, d_k] -> needs [num_heads, this_len, d_k]
             Q_padded[k_idx, :, :this_len, :] = q[start:start + this_len].transpose(0, 1)
 
+        # due to mismatch in blocktable, we have it in py dict and kernel expects it in iterable cuda tensor 
+        # Convert block_table (dict of Python lists) into a padded CUDA tensor for the kernel
+        max_blocks_this_step = max(num_blocks_per_seq).item() if torch.is_tensor(num_blocks_per_seq) else max(num_blocks_per_seq)
+
+        block_table_tensor = torch.zeros(num_sequences, max_blocks_this_step, dtype=torch.int32, device=q.device)
+
+        for k_idx, seq_id in enumerate(sequence_id):
+            seq_id_val = seq_id.item()
+            blocks_for_seq = block_table[seq_id_val]
+            block_table_tensor[k_idx, :len(blocks_for_seq)] = torch.tensor(blocks_for_seq, dtype=torch.int32, device=q.device)
+
+
         # 6. Kernel call : K/V come from the pool (self.k_cache/self.v_cache), not from this step's k/v directly
         O, _ = FlashAttentionFunction.apply(
             Q_padded, self.k_cache, self.v_cache,
-            q_len_per_seq, block_table, num_blocks_per_seq, self.block_size, kv_len_per_seq
+            q_len_per_seq, block_table_tensor, num_blocks_per_seq, self.block_size, kv_len_per_seq
         )
 
         # 7. Unpad O back to flat [total_tokens, num_heads, d_k]
