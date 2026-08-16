@@ -100,15 +100,16 @@ def run(q):
         # now finally building the main mask using position_ids and pos_seq_id (insstead of using two loops which we could, we are just using broadcasting)
         
         # Grid 1: same sequence (symmetric, order of unsqueeze doesn't matter which is which)
-        same_seq = pos_seq_id.unsqueeze(1) == pos_seq_id.unsqueeze(0)
+        # same_seq = pos_seq_id.unsqueeze(1) == pos_seq_id.unsqueeze(0)
 
-        # Grid 2: not future (directioanl: row i is the query, col j is the key; j must be <= i)
-        not_future = position_ids.unsqueeze(0) <= position_ids.unsqueeze(1)
+        # # Grid 2: not future (directioanl: row i is the query, col j is the key; j must be <= i)
+        # not_future = position_ids.unsqueeze(0) <= position_ids.unsqueeze(1)
 
-        # Final mask: both conditions must hold
-        tgt_mask = same_seq & not_future
+        # # Final mask: both conditions must hold
+        # tgt_mask = same_seq & not_future
+        # we dont need the mask anymore since the FA already now implements it internally. 
 
-        logits = model(flat_tokens, tgt_mask, position_ids, block_manager_obj.block_table, length, kv_len_per_seq, sequence_id) # adding sequence_id as well because we need it for computing the num_blocks_per_seq in attention module by making sure that the sequence ids are exactly in order
+        logits = model(flat_tokens, block_manager_obj.block_table, length, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id) # adding sequence_id as well because we need it for computing the num_blocks_per_seq in attention module by making sure that the sequence ids are exactly in order
 
         # the logits now contain the per sequence output. logits shape : [total_tokens, vocab_size]
         # we only want the last row that was contributed to the sequence and then append it to that particular seq_id's sequence
