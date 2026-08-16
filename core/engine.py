@@ -3,15 +3,13 @@ This is the high level file that manages the Queue and handes the Queue to model
 """
 
 import queue
-import pickle
 from core.model_runner import run
+from transformer.tokenizer import Tokenizer
+import pickle
 
 q = queue.Queue()
 
 with open('transformer/tokenizer.pkl', 'rb') as f:
     tok = pickle.load(f)
 
-test_prompt = tok.encode_sentence("Once upon a time", add_sos=True, add_eos=False)
-q.put(test_prompt)
-
-run(q)
+run(q, tok)
