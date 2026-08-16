@@ -12,7 +12,8 @@ from collections import deque # for the new_request dequeue
 import torch
 from transformer.model import build_transformer
 from transformer.config import transformer_configurations
-model = build_transformer(transformer_configurations)
+from transformer.load_checkpoint import load_trained_weights
+model = load_trained_weights('transformer/decoder_only.pt')
 
 def run(q):
 
@@ -39,7 +40,12 @@ def run(q):
             scheduler_obj.add_request(Sequence(seq_id=seq_cnt, prompt_token_ids=curr_req)) # is_finished is False by default, so we are not passing it in this call
             seq_cnt += 1
 
-        prefill_seq, decode_seq = scheduler_obj.schedule()
+        output = scheduler_obj.schedule()
+        prefill_seq = output.prefill_seqs
+        decode_seq = output.decode_seqs
+
+        if not prefill_seq and not decode_seq:
+            continue
 
         # Note: here, prefill_seq / decode_seq are Sequence objects that holds their own metadata (seq_id, propmt_token_id, is_finished)
 
@@ -90,12 +96,13 @@ def run(q):
             flat_tokens.append(seq.token_ids[-1])
 
         # converting all the lists to tensors since we are going to send it to forward pass
-        sequence_id = torch.tensor(sequence_id, dtype=torch.int32)
-        length = torch.tensor(length, dtype=torch.int32)
-        offset = torch.tensor(offset, dtype=torch.int32)
-        position_ids = torch.tensor(position_ids, dtype=torch.int32)
-        pos_seq_id = torch.tensor(pos_seq_id, dtype=torch.int32)
-        flat_tokens = torch.tensor(flat_tokens, dtype=torch.int32)
+        sequence_id = torch.tensor(sequence_id, dtype=torch.int32, device='cuda')
+        length = torch.tensor(length, dtype=torch.int32, device='cuda')
+        offset = torch.tensor(offset, dtype=torch.int32, device='cuda')
+        position_ids = torch.tensor(position_ids, dtype=torch.int32, device='cuda')
+        pos_seq_id = torch.tensor(pos_seq_id, dtype=torch.int32, device='cuda')
+        flat_tokens = torch.tensor(flat_tokens, dtype=torch.int32, device='cuda')
+        kv_len_per_seq = torch.tensor(kv_len_per_seq, dtype=torch.int32, device='cuda')
 
         # now finally building the main mask using position_ids and pos_seq_id (insstead of using two loops which we could, we are just using broadcasting)
         
@@ -118,9 +125,7 @@ def run(q):
         # so we can use (offset[k] + length[k] - 1) to exactly reach to each last indicees of each unique row
         # so we just build a matrix of the list of last indices to extract and then we can iterate over logits to get those particular rows itself.
         num_sequences = len(prefill_seq) + len(decode_seq)
-        last_indices = []
-        for i in range(num_sequences):
-            last_indices.append(offset[i] + length[i] - 1)
+        last_indices = offset + length - 1
 
         # now we have exact index values of tokens that we need 
         last_seq_logits = logits[last_indices] # we directly index into the 2d tensor to get those rows rather than running a loop 
@@ -138,5 +143,8 @@ def run(q):
         for seq in decode_seq:
             seq.token_ids.append(new_tokens[current_index])
             current_index += 1
+
+        for seq in prefill_seq + decode_seq:
+            print(f"seq {seq.seq_id}: {seq.token_ids}")
 
         
