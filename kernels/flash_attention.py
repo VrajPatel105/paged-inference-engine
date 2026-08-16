@@ -153,33 +153,9 @@ def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, q
     return O, L
 
 
-def run_fa_fwd(batch, heads, seq_len, head_dim):
-
-    torch.manual_seed(42)
-
-    Q = torch.rand(batch, heads, seq_len, head_dim, device=DEVICE, dtype=torch.float16)
-    K = torch.rand(batch, heads, seq_len, head_dim, device=DEVICE, dtype=torch.float16)
-    V = torch.rand(batch, heads, seq_len, head_dim, device=DEVICE, dtype=torch.float16)
-
-    output_flash_attention_o, _ = flash_attention_forward(Q, K, V)
-
-    # causal reference — PyTorch's built-in, is_causal=True applies the
-    # same "key position <= query position" rule you just added
-    output_torch = torch.nn.functional.scaled_dot_product_attention(
-        Q, K, V, is_causal=True
-    )
-
-    diff = (output_flash_attention_o - output_torch).abs()
-    print("max abs diff:", diff.max().item())
-    print("mean abs diff:", diff.mean().item())
-
-    result = torch.allclose(output_flash_attention_o, output_torch, atol=1e-2, rtol=1e-3)
-    return result
-
-
 class FlashAttentionFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, V):
-        O, L = flash_attention_forward(Q, K, V)
+    def forward(ctx, Q, K, V, q_len_per_seq, block_table, num_blocks_per_seq, block_size, kv_len_per_seq):
+        O, L = flash_attention_forward(Q, K, V,  q_len_per_seq, block_table, num_blocks_per_seq, block_size, kv_len_per_seq)
         ctx.save_for_backward(Q, K, V, O, L)
         return O
