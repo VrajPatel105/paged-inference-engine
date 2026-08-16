@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Paged Inference Engine — Live</title>
+<style>
+  body { font-family: sans-serif; background: #111; color: #eee; padding: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 20px; }
+  .window { border: 1px solid #444; border-radius: 8px; padding: 15px; }
+  input { width: 100%; padding: 8px; margin-bottom: 8px; box-sizing: border-box; }
+  button { padding: 8px 16px; cursor: pointer; }
+  .output { margin-top: 10px; height: 250px; overflow-y: auto; white-space: pre-wrap; border: 1px solid #333; padding: 10px; background: #1a1a1a; }
+</style>
+</head>
+<body>
+
+<h1>Paged Inference Engine — Live</h1>
+
+<div class="grid" id="grid"></div>
+
+<script>
+const NUM_WINDOWS = 4;
+const grid = document.getElementById("grid");
+
+for (let i = 0; i < NUM_WINDOWS; i++) {
+  const div = document.createElement("div");
+  div.className = "window";
+  div.innerHTML = `
+    <h3>Window ${i + 1}</h3>
+    <input type="text" id="prompt-${i}" placeholder="Enter a prompt...">
+    <button onclick="submitPrompt(${i})">Generate</button>
+    <div class="output" id="output-${i}">(waiting for output)</div>
+  `;
+  grid.appendChild(div);
+}
+
+function submitPrompt(i) {
+  const prompt = document.getElementById(`prompt-${i}`).value;
+  if (!prompt.trim()) return;
+  fetch(`/submit/${i}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: prompt })
+  });
+}
+
+async function pollOutputs() {
+  const res = await fetch("/output");
+  const data = await res.json();
+  for (let i = 0; i < NUM_WINDOWS; i++) {
+    if (data[i] !== undefined) {
+      document.getElementById(`output-${i}`).innerText = data[i];
+    }
+  }
+}
+
+setInterval(pollOutputs, 1000);
+</script>
+
+</body>
+</html>
