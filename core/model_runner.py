@@ -59,6 +59,9 @@ def run(q):
         pos_seq_id = []
         offset_cnt = 0
 
+        # main 1d tensor that will be flat token
+        flat_tokens = []
+
         for seq in prefill_seq:
             num_new_token = len(seq.prompt_token_ids)
             sequence_id.append(seq.seq_id)
@@ -67,6 +70,7 @@ def run(q):
             offset_cnt = offset_cnt + len(seq.prompt_token_ids) # increasing the count for the next seq's starting pos to be recorded
             pos_seq_id.extend([seq.seq_id] * num_new_token)
             position_ids.extend(range(len(seq.token_ids)))
+            flat_tokens.extend(seq.prompt_token_ids)
 
         # now the decode loop
         for seq in decode_seq:
@@ -77,6 +81,7 @@ def run(q):
             offset_cnt = offset_cnt + num_new_token
             pos_seq_id.extend([seq.seq_id] * num_new_token)
             position_ids.extend([len(seq.token_ids)])
+            flat_tokens.append(seq.token_ids[-1])
 
         # converting all the lists to tensors since we are going to send it to forward pass
         sequence_id = torch.tensor(sequence_id, dtype=torch.int32)
@@ -95,3 +100,4 @@ def run(q):
 
         # Final mask: both conditions must hold
         tgt_mask = same_seq & not_future
+
