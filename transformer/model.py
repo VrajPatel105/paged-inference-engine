@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import math
-from config import configurations
+from core.config import core_configurations
 
 import sys
 
@@ -75,7 +75,13 @@ class MultiHeadAttention(nn.Module):
         return attention_scores @ v  
 
     # added kv_cache parameter
-    def forward(self, q, k, v, mask, kv_cache=None):
+    def forward(self, q, k, v, mask, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, kv_cache=None):
+        # compute  the num_blocks_per_seq and block_size from config
+        block_size = core_configurations['block_size']
+        num_blocks_per_seq = []
+        # upon iterating over sequence_id it makes sure that we only get the size of blocks for the sequences that are currently being processed. otherwise, the block_manager might have random prefill and decode sequences all over which might mess up our logic.
+        for seq in sequence_id:
+            num_blocks_per_seq.append(len(block_table[seq]))
 
         batch_size = q.size(0)
         q_len = q.size(1)
@@ -200,8 +206,8 @@ class Decoder(nn.Module):
         self.residual_connection = nn.ModuleList([ResidualConnections(self.d_model) for _ in range(2)])
         self.feed_forward = feed_forward
 
-    def forward(self, x, tgt_mask, sa_cache=None):
-        sub_layer, new_sa_cache = self.masked_attention(x, x, x, tgt_mask, kv_cache=sa_cache)
+    def forward(self, x, tgt_mask, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, sa_cache=None):
+        sub_layer, new_sa_cache = self.masked_attention(x, x, x, tgt_mask, block_table, q_len_per_seq, kv_len_per_seq, sequence_id,  kv_cache=sa_cache)
         x = self.residual_connection[0](x, sub_layer)
         sub_layer = self.feed_forward(x)
         x = self.residual_connection[1](x, sub_layer)
@@ -229,11 +235,12 @@ class Transformer(nn.Module):
         self.decoder_blocks = decoder_blocks
         self.projection_layer = projection_layer
     
-    def forward(self, tgt, tgt_mask, position_ids):
+    def forward(self, tgt, tgt_mask, position_ids, block_table, q_len_per_seq, kv_len_per_seq, sequence_id):
+        # compute the num_blocks_per_seq
         tgt = self.tgt_pe(self.tgt_embed(tgt), position_ids)
         
         for block in self.decoder_blocks:
-            tgt, _ = block(tgt, tgt_mask)
+            tgt, _ = block(tgt, tgt_mask, block_table, q_len_per_seq, kv_len_per_seq, sequence_id)
         
         return self.projection_layer(tgt)
     
