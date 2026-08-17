@@ -28,6 +28,9 @@ def flash_attention_kernel(
     q_len_per_seq,
     stride_bt_batch, stride_bt_col,
     kv_len_per_seq,
+    k_scale, v_scale,
+    stride_k_b_scale, stride_k_h_scale,
+    stride_v_b_scale, stride_v_h_scale,
     block_size : tl.constexpr,
     head_dim : tl.constexpr, 
     BLOCK_M : tl.constexpr,
@@ -66,11 +69,23 @@ def flash_attention_kernel(
         k_mask = offs_n[:, None] < remaining_for_this_block
         v_mask = offs_n[:, None] < remaining_for_this_block
 
+        # build the k_scale and v_scale tiles and load it. 
+        k_scale_ptrs = k_scale + block_number * stride_k_b_scale + pid_head * stride_k_h_scale # this is just a scalar value ptr now
+        k_scale_tile = tl.load(k_scale_ptrs)
+
+        v_scale_ptrs = v_scale + block_number * stride_v_b_scale + pid_head * stride_v_h_scale
+        v_scale_tile = tl.load(v_scale_ptrs)
+
         k_tile = tl.load(k_ptrs, mask=k_mask, other=0.0)
         v_tile = tl.load(v_ptrs, mask=v_mask, other=0.0)
 
+        # now we can dequantize the k and v tiles back before sending it to dot
+        dequantized_k_tile = k_tile.to(tl.float32) * k_scale_tile
+        dequantized_v_tile = v_tile.to(tl.float32) * v_scale_tile
+
+
         # compute S with the 1/root(d) scailing factor 
-        num = tl.dot(q_tile, tl.trans(k_tile))
+        num = tl.dot(q_tile, tl.trans(dequantized_k_tile))
         # S = num / tl.sqrt(head_dim.to(tl.float32))
         S = num / (head_dim ** 0.5) # replaced the above one with this new one for precision issues
         S = S.to(tl.float32) # trying to force it to produce fp32 
@@ -95,7 +110,7 @@ def flash_attention_kernel(
         # now o
         rescale_factor = tl.exp(m - m_new)
         old_c = rescale_factor[:, None] * o # this broadcasts the per row scalar across head_dim
-        new_c = tl.dot(tilde_p, v_tile.to(tl.float32)) # casting to fp32
+        new_c = tl.dot(tilde_p, dequantized_v_tile)
         o_new = old_c + new_c
 
         # update the new values to the running states (vars)
@@ -121,7 +136,7 @@ def flash_attention_kernel(
     tl.store(l_ptrs, final_l, mask=l_mask)
 
 
-def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, q_len_per_seq, block_table, num_blocks_per_seq, block_size, kv_len_per_seq):
+def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, q_len_per_seq, block_table, num_blocks_per_seq, block_size, kv_len_per_seq, k_scale_ptr, v_scale_ptr):
 
     # extracting the size for q k v tensors
     batch, num_heads, o_l_seq_len_helper, head_dim = Q.shape
@@ -147,7 +162,11 @@ def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, q
             block_table, num_blocks_per_seq,
             q_len_per_seq, 
             block_table.stride(0), block_table.stride(1), 
-            kv_len_per_seq, block_size, head_dim
+            kv_len_per_seq,
+            k_scale_ptr, v_scale_ptr,
+            k_scale_ptr.stride(0), k_scale_ptr.stride(1),
+            v_scale_ptr.stride(0), v_scale_ptr.stride(1),
+            block_size, head_dim
         )
     
     return O, L
@@ -155,7 +174,7 @@ def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, q
 
 class FlashAttentionFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, K, V, q_len_per_seq, block_table, num_blocks_per_seq, block_size, kv_len_per_seq):
-        O, L = flash_attention_forward(Q, K, V,  q_len_per_seq, block_table, num_blocks_per_seq, block_size, kv_len_per_seq)
+    def forward(ctx, Q, K, V, q_len_per_seq, block_table, num_blocks_per_seq, block_size, kv_len_per_seq, k_scale_ptr, v_scale_ptr):
+        O, L = flash_attention_forward(Q, K, V, q_len_per_seq, block_table, num_blocks_per_seq, block_size, kv_len_per_seq, k_scale_ptr, v_scale_ptr)
         ctx.save_for_backward(Q, K, V, O, L)
         return O

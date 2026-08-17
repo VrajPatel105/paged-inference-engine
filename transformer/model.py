@@ -61,9 +61,10 @@ class MultiHeadAttention(nn.Module):
         self.W_o = nn.Linear(d_model, d_model)
         self.block_size = core_configurations['block_size']
         self.num_blocks = core_configurations['num_blocks']
-        self.register_buffer('k_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k)) # buiding the actual tensors that will be used for kv cache in FA
-        self.register_buffer('v_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k))
-        
+        self.register_buffer('k_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k, dtype=torch.int8))
+        self.register_buffer('v_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k, dtype=torch.int8))
+        self.register_buffer('k_scale', torch.zeros(self.num_blocks, self.num_heads))
+        self.register_buffer('v_scale', torch.zeros(self.num_blocks, self.num_heads))
 
     def forward(self, q, k, v, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id):
 
@@ -90,8 +91,37 @@ class MultiHeadAttention(nn.Module):
 
             block_number = block_table[seq_id][block_idx_in_seq]
 
-            self.k_cache[block_number, :, slot_in_block, :] = k[i]
-            self.v_cache[block_number, :, slot_in_block, :] = v[i]
+            # quantization
+            # we will do : dequant existing -> append nwe -> rescale -> requant -> write back
+
+            dequantized_k = (self.k_cache[block_number, :, 0:slot_in_block, :]).to(torch.float32) * self.k_scale[block_number, :].unsqueeze(-1).unsqueeze(-1)
+            dequantized_v = (self.v_cache[block_number, :, 0:slot_in_block, :]).to(torch.float32) * self.v_scale[block_number, :].unsqueeze(-1).unsqueeze(-1)
+
+            # our dequantize_k is shape [block_number, slot_in_block, d_k] and k[i] is still [num_heads, d_k] so we unsqueeze k[i] to [num_heads, 1, d_k]
+            full_k = torch.cat([dequantized_k, k[i].unsqueeze(1)], dim=1) # shape [block_number, slot_in_block + 1, d_k]
+            full_v = torch.cat([dequantized_v, v[i].unsqueeze(1)], dim=1)
+
+            # now lets get the scale pre head
+            abs_full_k_intermediate_step = torch.max(torch.abs(full_k), dim=2).values
+            # again reducing it more to num_heads shape. currently itthe abs_full_k_intermediate_step is [num_heads, slot_in_block] and we have to make it [num_heads]
+            k_scale_new = torch.max(abs_full_k_intermediate_step, dim=1).values / 127
+
+            abs_full_v_intermediate_step = torch.max(torch.abs(full_v), dim=2).values
+            v_scale_new = torch.max(abs_full_v_intermediate_step, dim=1).values / 127
+
+            # requantize -> for symmetric it's roud(value/scale)
+            quantized_k = torch.clamp(torch.round(full_k/k_scale_new.unsqueeze(-1).unsqueeze(-1)), -127,127).to(torch.int8)
+            quantized_v = torch.clamp(torch.round(full_v/v_scale_new.unsqueeze(-1).unsqueeze(-1)), -127,127).to(torch.int8)
+
+            # writing the scale back into scale buffers. k_scale is [num_blocks, num_heads] and k_scake_new/v_scale_new is [num_heads] so we index into that particular block_number in kscale and vscale
+            self.k_scale[block_number] = k_scale_new
+            self.v_scale[block_number] = v_scale_new
+
+            # now finally, quaitized_k/v is shape [num_heads, slot_in_block+1, d_k]
+            self.k_cache[block_number, :, 0:slot_in_block+1, :] = quantized_k
+            self.v_cache[block_number, :, 0:slot_in_block+1, :] = quantized_v
+
+
 
         # 4. num_blocks_per_seq, derived from block_table via sequence_id (correct order)
         num_blocks_per_seq = []
@@ -125,7 +155,8 @@ class MultiHeadAttention(nn.Module):
         # 6. Kernel call : K/V come from the pool (self.k_cache/self.v_cache), not from this step's k/v directly
         O = FlashAttentionFunction.apply(
             Q_padded, self.k_cache, self.v_cache,
-            q_len_per_seq, block_table_tensor, num_blocks_per_seq, self.block_size, kv_len_per_seq
+            q_len_per_seq, block_table_tensor, num_blocks_per_seq, self.block_size, kv_len_per_seq,
+            self.k_scale, self.v_scale
         )
 
         # 7. Unpad O back to flat [total_tokens, num_heads, d_k]
