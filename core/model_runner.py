@@ -139,15 +139,19 @@ def run(q, tok, output_state=None, window_map=None):
         #prefill 
         current_index = 0
         for seq in prefill_seq:
-            seq.token_ids.append(new_tokens[current_index])
+            if new_tokens[current_index] == tok.EOS_ID:
+               seq.is_finished=True
+            else: 
+                 seq.token_ids.append(new_tokens[current_index])
             current_index += 1
 
         for seq in decode_seq:
-            seq.token_ids.append(new_tokens[current_index])
+            if new_tokens[current_index] == tok.EOS_ID:
+               seq.is_finished=True
+            else: 
+                 seq.token_ids.append(new_tokens[current_index])
             current_index += 1
 
-        for seq in prefill_seq + decode_seq:
-            print(f"seq {seq.seq_id}: {tok.decode_sentence(seq.token_ids)}")
 
         if output_state is not None:
             for seq in prefill_seq + decode_seq:
