@@ -11,7 +11,7 @@ from transformer.config import transformer_configurations
 
 
 def load_data():
-    dataset = load_dataset("roneneldan/TinyStories", split="train[:20000]")
+    dataset = load_dataset("roneneldan/TinyStories", split="train[:200000]")
     return dataset["text"]
 
 
@@ -206,7 +206,7 @@ if __name__ == "__main__":
     model = build_train_transformer(transformer_configurations, tok.vocab_size())
 
     criterion = nn.CrossEntropyLoss(ignore_index=tok.PAD_ID)
-    optimizer = optim.Adam(model.parameters(), lr=transformer_configurations['learning_rate'])
+    optimizer = optim.Adam(model.parameters(), lr=transformer_configurations['learning_rate'], weight_decay=0.01)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
