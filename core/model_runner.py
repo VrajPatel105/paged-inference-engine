@@ -23,7 +23,7 @@ class Engine:
 
         self.new_requests = deque()
 
-        self.q =queue.Queue()
+        self.q = queue.Queue()
 
         self.seq_cnt = 0  # unique count for each new sequence id (new user)
 
@@ -31,10 +31,10 @@ class Engine:
 
         self.running = True
 
-    def submit(self, prompt_token_ids):
+    def submit(self, prompt_token_ids, max_token_to_generate):
         seq_id = self.seq_cnt
         self.seq_cnt += 1
-        self.q.put((seq_id, prompt_token_ids))
+        self.q.put((seq_id, prompt_token_ids, max_token_to_generate))
         return seq_id
 
     def stop(self):
@@ -53,8 +53,8 @@ class Engine:
 
             # convert each entry from new_requests into Sequence obj and pass to scheduler to add request
             while self.new_requests:
-                seq_id, prompt_token_ids = self.new_requests.popleft()
-                self.scheduler_obj.add_request(Sequence(seq_id=seq_id, prompt_token_ids=prompt_token_ids))
+                seq_id, prompt_token_ids, max_token_to_generate = self.new_requests.popleft()
+                self.scheduler_obj.add_request(Sequence(seq_id=seq_id, prompt_token_ids=prompt_token_ids, max_token_to_generate=max_token_to_generate))
 
             output = self.scheduler_obj.schedule()
             prefill_seq = output.prefill_seqs
