@@ -59,6 +59,12 @@ class Engine:
             output = self.scheduler_obj.schedule()
             prefill_seq = output.prefill_seqs
             decode_seq = output.decode_seqs
+            finished_seq = output.finished_sequences
+
+            # running and checking if there's any finished sequences (caused by 200> context length or generation is done)
+            # we write rthe results for that seq id and then also set a flag at last. done=True 
+            for seq in finished_seq:
+                self.results[seq.seq_id] = (self.tok.decode_sentence(seq.token_ids), True)
 
             if not prefill_seq and not decode_seq:
                 continue
@@ -167,4 +173,4 @@ class Engine:
                 current_index += 1
 
             for seq in prefill_seq + decode_seq:
-                self.results[seq.seq_id] = self.tok.decode_sentence(seq.token_ids)
+                self.results[seq.seq_id] = (self.tok.decode_sentence(seq.token_ids), False)

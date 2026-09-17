@@ -12,6 +12,7 @@ from dataclasses import dataclass
 class SchedulerOutput:
     prefill_seqs: list[Sequence]
     decode_seqs: list[Sequence]
+    finished_sequences: list[Sequence]
 
 
 class Scheduler:
@@ -26,6 +27,9 @@ class Scheduler:
         self.running_requests = []
         self.skip_counts = {}
 
+        self.finished_sequence_list = []
+
+
     def schedule(self):
         self._free_finished()
         self._allocate_decode()
@@ -35,13 +39,15 @@ class Scheduler:
     def add_request(self, seq: Sequence):
         self.waiting_requests.append(seq)
 
-
     def _free_finished(self):   
         # in this function, we check if there are any running requests that needs their blocks to be freed up -> this has two conditions, either we have <EOS> id or max_length reached. This is decided from sequence class
-
+        
+        self.finished_sequence_list = []
         running_requests_copy = self.running_requests.copy()
         for sequences in running_requests_copy:
             if sequences.is_finished or len(sequences.token_ids) >= self.max_len:
+                sequences.is_finished = True
+                self.finished_sequence_list.append(sequences)
                 self.block_manager.release_blocks(sequences.seq_id)
                 self.running_requests.remove(sequences)
 
@@ -108,4 +114,4 @@ class Scheduler:
             else:
                 decode_seq.append(sequences)
 
-        return SchedulerOutput(prefill_seqs=prefill_seq, decode_seqs=decode_seq)
+        return SchedulerOutput(prefill_seqs=prefill_seq, decode_seqs=decode_seq, finished_sequences=self.finished_sequence_list)
