@@ -94,7 +94,7 @@ def paged_generate_with_timing(model, prompts, tok, max_steps=None):
 
     batch_start = time.time()
     for seq_id, prompt_token_ids in enumerate(prompts):
-        scheduler_obj.add_request(Sequence(seq_id=seq_id, prompt_token_ids=prompt_token_ids))
+        scheduler_obj.add_request(Sequence(seq_id=seq_id, prompt_token_ids=prompt_token_ids, max_token_to_generate=core_configurations['max_len']))
         submit_time[seq_id] = batch_start
         token_times[seq_id] = []
 
