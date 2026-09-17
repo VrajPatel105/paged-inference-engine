@@ -29,15 +29,20 @@ class Engine:
 
         self.results = {}
 
+        self.running = True
+
     def submit(self, prompt_token_ids):
         seq_id = self.seq_cnt
         self.seq_cnt += 1
         self.q.put((seq_id, prompt_token_ids))
         return seq_id
 
+    def stop(self):
+        self.running = False
+
     def run(self):
 
-        while True:
+        while self.running:
 
             try:
                 while True:
