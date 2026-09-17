@@ -29,7 +29,6 @@ class Scheduler:
 
         self.finished_sequence_list = []
 
-
     def schedule(self):
         self._free_finished()
         self._allocate_decode()
