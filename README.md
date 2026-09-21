@@ -37,7 +37,7 @@ Compared against a naive baseline (plain PyTorch attention, one request at a tim
 | 16 | 542 | 173 |
 | 32 | 543 | 176 |
 
-<img src="./demo/images/benchmark_throughput_results.png" alt="Benchmark Throughput Results" width="700">
+<img src="./demo/images/benchmark_throughput_results.png" alt="Aggregate throughput against concurrency: naive sequential flat near 540 tok/s, paged engine climbing from 95 to 176 tok/s" width="700">
 
 Naive stays flat since there's no batching happening, each request is fully sequential. Paged throughput nearly doubles from 1 to 32 concurrent requests, which is the batching working as intended, but it plateaus below naive's raw speed at this scale. At a small model size and short sequence lengths, the fixed per-step overhead of the paged path (kernel launches, block table construction, padding and unpadding the packed batch) isn't amortized enough to beat a dead-simple loop. That overhead matters less as the model gets bigger: once each step is dominated by reading model weights, batching more sequences into the same step costs very little extra. Benchmarking against a real open-weight model is the next step.
 
