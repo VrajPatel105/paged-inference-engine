@@ -29,19 +29,17 @@ Hardware: NVIDIA RTX 5080 Laptop (16 GB), CUDA 12.9, WSL2. Each request generate
 
 Compared against a naive baseline (plain PyTorch attention, one request at a time, no batching, no cache reuse) across concurrency levels 1 through 32:
 
-| Concurrent requests | Paged throughput (tok/s) |
-|---|---|
-| 1 | 85 |
-| 4 | 152 |
-| 8 | 166 |
-| 16 | 173 |
-| 32 | 176 |
-
-The naive baseline stays flat at roughly 530–550 tok/s at every concurrency level.
+| Concurrent requests | Naive (tok/s) | Paged (tok/s) |
+|---|---|---|
+| 1 | 491 | 95 |
+| 4 | 542 | 152 |
+| 8 | 550 | 166 |
+| 16 | 542 | 173 |
+| 32 | 543 | 176 |
 
 <img src="./demo/images/benchmark_throughput_results.png" alt="Benchmark Throughput Results" width="700">
 
-Naive stays flat since there's no batching happening, each request is fully sequential. Paged throughput roughly doubles as concurrency increases, which is the batching working as intended, but it plateaus below naive's raw speed at this scale. At a small model size and short sequence lengths, the fixed per-step overhead of the paged path (kernel launches, block table construction, padding and unpadding the packed batch) isn't amortized enough to beat a dead-simple loop. That overhead matters less as the model gets bigger: once each step is dominated by reading model weights, batching more sequences into the same step costs very little extra. Benchmarking against a real open-weight model is the next step.
+Naive stays flat since there's no batching happening, each request is fully sequential. Paged throughput nearly doubles from 1 to 32 concurrent requests, which is the batching working as intended, but it plateaus below naive's raw speed at this scale. At a small model size and short sequence lengths, the fixed per-step overhead of the paged path (kernel launches, block table construction, padding and unpadding the packed batch) isn't amortized enough to beat a dead-simple loop. That overhead matters less as the model gets bigger: once each step is dominated by reading model weights, batching more sequences into the same step costs very little extra. Benchmarking against a real open-weight model is the next step.
 
 I also tried to measure a memory ceiling (max concurrent requests before running out of GPU memory), but hit a measurement issue specific to running under WSL2. GPU memory numbers reported were physically impossible for the hardware, likely due to WSL2's virtualized memory handling. Rather than report a broken number, I'm noting this as inconclusive.
 
