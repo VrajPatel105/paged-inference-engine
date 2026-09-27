@@ -45,6 +45,7 @@ class Scheduler:
         running_requests_copy = self.running_requests.copy()
         for sequences in running_requests_copy:
             if sequences.is_finished or len(sequences.token_ids) >= sequences.max_token_to_generate + len(sequences.prompt_token_ids) or len(sequences.token_ids) >= self.max_len:
+                # the middle condition in the above if statement chekcs if the user's requested max token to generate exceeds the current one then we end it.
                 sequences.is_finished = True
                 self.finished_sequence_list.append(sequences)
                 self.block_manager.release_blocks(sequences.seq_id)
@@ -52,7 +53,7 @@ class Scheduler:
 
 
     def _allocate_decode(self):
-        # iterate through the current running sequences and find which one needs more blocks to be allocated and allocated it.
+        # iterate through the current running sequences and find which one needs more blocks to be allocated and allocate it.
 
         for sequences in self.running_requests:
             block_needed = math.ceil((len(sequences.token_ids) + 1) /self.block_size)

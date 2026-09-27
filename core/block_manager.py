@@ -24,20 +24,21 @@ class BlockManager:
         self.st = list(range(num_blocks))
         self.block_table: dict[int, list[int]] = {}
 
-    def allocate(self, seq_id: int, num_blocks: int) -> AllocResult:
+    def allocate(self, seq_id: int, curr_seq_num_blocks: int) -> AllocResult:
         # main idea for this function is to take the seq_id and the number of blocks it wants and we firstly 
         # check if we have that number of free blocks available or not and then depending on that we take descisions.
 
-        if self.num_free_blocks() < num_blocks:
+        if self.num_free_blocks() < curr_seq_num_blocks:
             return AllocResult(AllocStatus.INSUFFICIENT_SPACE, [])
 
-        free_blocks_indices = []
-        for _ in range(num_blocks):
+        free_blocks_indices = [] # list for keeping track of all the allocated blocks
+        for _ in range(curr_seq_num_blocks):
             free_blocks_indices.append(self.st.pop())
 
+        # if current seq exists in block table, then add the new indices to the existing list for that sequence_id in block table
         if seq_id in self.block_table:
                 self.block_table[seq_id].extend(free_blocks_indices)
-        else: 
+        else: # else, means that this is initial allocation of that sequence's block id's so we allocate all of them.
             self.block_table[seq_id] = free_blocks_indices
 
         return AllocResult(AllocStatus.SUCCESS, free_blocks_indices)
