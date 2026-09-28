@@ -18,7 +18,7 @@ class Embedding(nn.Module):
         
     def forward(self, x):
 
-        return self.embedding(x) * math.sqrt(self.d_model) 
+        return self.embedding(x) * math.sqrt(self.d_model) # converting 1d flat token to 2d -> x : [total_token, d_model]
 
 
 # Positional Encoding class
@@ -29,21 +29,21 @@ class PositionalEncoding(nn.Module):
         self.max_seq_len = max_seq_len
         self.d_model = d_model
 
-        positional_encoded_tensor = torch.zeros((max_seq_len, d_model))
+        positional_encoded_tensor = torch.zeros((max_seq_len, d_model)) # shape (max_seq_len, d_model) -> (200 * 512)
 
-        pos = torch.arange(0, max_seq_len).unsqueeze(1).float()
-        i = torch.arange(0, d_model, 2).float()
-        den = 10000 ** (2*i / d_model)
-        final_num_den = pos / den
+        pos = torch.arange(0, max_seq_len).unsqueeze(1).float() # [200].unsqueeze(1) -> [200,1]
+        i = torch.arange(0, d_model, 2).float() # [256]
+        den = 10000 ** (2*i / d_model) #[256]
+        final_num_den = pos / den # [200,1] / [256] -> [200,256]
 
         positional_encoded_tensor[:, 0::2] = torch.sin(final_num_den)
         positional_encoded_tensor[:, 1::2] = torch.cos(final_num_den)
 
-        self.register_buffer('pe', positional_encoded_tensor.unsqueeze(0))
+        self.register_buffer('pe', positional_encoded_tensor.unsqueeze(0)) # (200 * 512).unsqueeze(0) -> [1, 200, 512]
 
     def forward(self, x, position_ids):
-        x = x + self.pe[0, position_ids, :]
-        return x
+        x = x + self.pe[0, position_ids, :] # [total_tokens, 512] + [total_tokens, 512] -> [total_tokens, 512]
+        return x # [total_token, d_model]
 
 
 # Multi Head attention class

@@ -11,11 +11,12 @@ import queue
 from collections import deque # for the new_request dequeue
 import torch
 
+# This engine class is a standalone class. So we will need to run it before running the main inner logic (and if it's in serving engine, the logic is implemented in the serving engine.)
 class Engine:
     def __init__(self, model, tok):
 
-        self.model = model
-        self.tok = tok
+        self.model = model # this is loaded from the serving engine
+        self.tok = tok # also loaded from serving engine where we initialized the engine object
 
         self.block_manager_obj = BlockManager(core_configurations['num_blocks'], core_configurations['block_size'])
 
@@ -83,27 +84,27 @@ class Engine:
 
             # lets first build the mask itself . shape : [total_tokens, total_tokens]
 
-            sequence_id = []
-            length = [] # can be reused as q_len_per_seq for FA kernel
-            offset = []
-            position_ids = []
-            pos_seq_id = []
+            sequence_id = [] # list that contains all the sequence_ids currently running and needs to be send to the forward pass
+            length = [] # can be reused as q_len_per_seq for FA kernel # length : how many new tokens does the sequence contriburtes at this current step
+            offset = [] # list that tells  us where the next sequence starts. We can use this to slice in flat tokens to jump between next sequence's tokens in the flat token.
+            position_ids = [] # Each token's position within it's own sequence
+            pos_seq_id = [] # which sequence each token belongs to 
             kv_len_per_seq = [] # required for FA kernel
-            offset_cnt = 0
+            offset_cnt = 0 # just a pointer that is used to fill the offset list
 
             # main 1d tensor that will be flat token
             flat_tokens = []
 
             for seq in prefill_seq:
-                num_new_token = len(seq.prompt_token_ids)
-                sequence_id.append(seq.seq_id)
-                length.append(num_new_token)
-                offset.append(offset_cnt)
-                offset_cnt = offset_cnt + len(seq.prompt_token_ids) # increasing the count for the next seq's starting pos to be recorded
-                pos_seq_id.extend([seq.seq_id] * num_new_token)
-                position_ids.extend(range(len(seq.token_ids)))
+                num_new_token = len(seq.prompt_token_ids) # new token in prefill will be the total prompt ids
+                sequence_id.append(seq.seq_id) # what sequence does this this entire sequence belong to
+                length.append(num_new_token) # this will be total prompt token ids  length
+                offset.append(offset_cnt) # adding the offset_cnt num to offset and then we increase it (see below)
+                offset_cnt = offset_cnt + num_new_token # increasing the count for the next seq's starting pos to be recorded
+                pos_seq_id.extend([seq.seq_id] * num_new_token) # extend repeats the number n, m times. so extend(n * m) -> [n, n, n.... m+1]
+                position_ids.extend(range(len(seq.token_ids))) # this is also each token's position  within it's own sequence -> we are using this for positional encoding
                 kv_len_per_seq.append(num_new_token)
-                flat_tokens.extend(seq.prompt_token_ids)
+                flat_tokens.extend(seq.prompt_token_ids) # finally appending the token ids to the flat tokens list
 
             # now the decode loop
             for seq in decode_seq:
