@@ -51,35 +51,37 @@ class MultiHeadAttention(nn.Module):
 
     def __init__(self, d_model, num_heads):
         super().__init__()
-        self.d_model = d_model
-        self.num_heads = num_heads
+        self.d_model = d_model # 512
+        self.num_heads = num_heads # 8
         assert d_model % num_heads == 0
-        self.d_k = d_model // num_heads
-        self.W_q = nn.Linear(d_model, d_model)
-        self.W_k = nn.Linear(d_model, d_model)
-        self.W_v = nn.Linear(d_model, d_model)
-        self.W_o = nn.Linear(d_model, d_model)
-        self.block_size = core_configurations['block_size']
-        self.num_blocks = core_configurations['num_blocks']
-        self.register_buffer('k_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k, dtype=torch.int8))
-        self.register_buffer('v_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k, dtype=torch.int8))
-        self.register_buffer('k_scale', torch.zeros(self.num_blocks, self.num_heads))
-        self.register_buffer('v_scale', torch.zeros(self.num_blocks, self.num_heads))
+        self.d_k = d_model // num_heads # 64
+        self.W_q = nn.Linear(d_model, d_model) # [512, 512]
+        self.W_k = nn.Linear(d_model, d_model) # [512, 512]
+        self.W_v = nn.Linear(d_model, d_model) # [512, 512]
+        self.W_o = nn.Linear(d_model, d_model) # [512, 512]
+        self.block_size = core_configurations['block_size'] # 64
+        self.num_blocks = core_configurations['num_blocks'] # 256
+        self.register_buffer('k_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k, dtype=torch.int8)) # [256, 8, 64, 64]
+        self.register_buffer('v_cache', torch.zeros(self.num_blocks, self.num_heads, self.block_size, self.d_k, dtype=torch.int8)) # [256, 8, 64, 64]
+        self.register_buffer('k_scale', torch.zeros(self.num_blocks, self.num_heads)) # [256, 8]
+        self.register_buffer('v_scale', torch.zeros(self.num_blocks, self.num_heads)) # [256, 8]
 
     def forward(self, q, k, v, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id):
 
+        # q,k,v = [total_token, d_model]
+
         num_sequences = len(sequence_id)
-        total_tokens = q.size(0)
+        total_tokens = q.size(0) # extracting the first val from q shape which is total_token
 
         # 1. Project
-        q = self.W_q(q)
-        k = self.W_k(k)
-        v = self.W_v(v)
+        q = self.W_q(q) # [total_tokens, 512] @ [512, 512] + bias[512] -> [total_tokens, 512]
+        k = self.W_k(k) # [total_tokens, 512] @ [512, 512] + bias[512] -> [total_tokens, 512]
+        v = self.W_v(v) # [total_tokens, 512] @ [512, 512] + bias[512] -> [total_tokens, 512]
 
         # 2. Head-split: [total_tokens, num_heads, d_k]
-        q = q.view(total_tokens, self.num_heads, self.d_k)
-        k = k.view(total_tokens, self.num_heads, self.d_k)
-        v = v.view(total_tokens, self.num_heads, self.d_k)
+        q = q.view(total_tokens, self.num_heads, self.d_k) # [total_tokens, 512] -> [total_tokens, 8, 64]
+        k = k.view(total_tokens, self.num_heads, self.d_k) # [total_tokens, 512] -> [total_tokens, 8, 64]
+        v = v.view(total_tokens, self.num_heads, self.d_k) # [total_tokens, 512] -> [total_tokens, 8, 64]
 
         # 3. Write this step's new K/V into the paged cache pool
         for i in range(total_tokens):
@@ -259,7 +261,7 @@ class Transformer(nn.Module):
     
     def forward(self, tgt, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id):
         # compute the num_blocks_per_seq
-        tgt = self.tgt_pe(self.tgt_embed(tgt), position_ids)
+        tgt = self.tgt_pe(self.tgt_embed(tgt), position_ids) # this returns shape [total_token, d_model]
         
         for block in self.decoder_blocks:
             tgt = block(tgt, block_table, q_len_per_seq, kv_len_per_seq, sequence_id, offset, length, position_ids, pos_seq_id)        
