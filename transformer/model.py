@@ -71,7 +71,7 @@ class MultiHeadAttention(nn.Module):
         # q,k,v = [total_token, d_model]
 
         num_sequences = len(sequence_id)
-        total_tokens = q.size(0) # extracting the first val from q shape which is total_token
+        total_tokens = q.size(0) # total_tokens is the count of how many new tokens are generated. for decode it will be just one token,  for prefill it will be the prompt size
 
         # 1. Project
         q = self.W_q(q) # [total_tokens, 512] @ [512, 512] + bias[512] -> [total_tokens, 512]
@@ -85,34 +85,79 @@ class MultiHeadAttention(nn.Module):
 
         # 3. Write this step's new K/V into the paged cache pool
         for i in range(total_tokens):
-            seq_id = pos_seq_id[i].item()
+
+            # here in order to understand this well, we can imagine a situation (got this great example from ai -_- )
+            # there are 256 drawers  -> block_number
+            # each drawer has 8 books  -> head
+            # each book has 64 pages  -> block_size
+            # each page has 64 numbers  -> d_k
+
+
+            seq_id = pos_seq_id[i].item() # pos_seq_id[i] # here .item() converts cuda tensor to a plain python int
             p = position_ids[i].item()
 
-            block_idx_in_seq = p // self.block_size
-            slot_in_block = p % self.block_size
+            block_idx_in_seq = p // self.block_size # for example 11 / 32 -> 0 so this sequence is in block 0
+            slot_in_block = p % self.block_size # what slot will this current value go in?  # 11 % 32 -> 11 so the slot is 11 meaning from 0 to book 11 is what we want.
 
-            block_number = block_table[seq_id][block_idx_in_seq]
+            block_number = block_table[seq_id][block_idx_in_seq] # what current block does this sequence have? (or, which drawer does this token belong to?)
+            # we finally get the block number
 
             # quantization
             # we will do : dequant existing -> append nwe -> rescale -> requant -> write back
 
+
+            # so for example, if we are to extract [6, :, 0:8, :] => extract the value from : drawer 6 -> all book -> first 0 to 7 pages -> all numbers
+            # here we are using one scale per book (per head)
+
             dequantized_k = (self.k_cache[block_number, :, 0:slot_in_block, :]).to(torch.float32) * self.k_scale[block_number, :].unsqueeze(-1).unsqueeze(-1)
+            # shape trace :
+            # initially, bufffer shape : [256, 8, 64, 64]
+            # k_cache[block_number, :, 0:slot_in_block, :] -> [8, slot_in_block, 64]
+
+            # k_scale initially : [256, 8]
+            # k_scale[block_number, :]                     -> [8]
+
+            # .unsqueeze(-1)                               -> [8, 1]
+            # .unsqueeze(-1)                               -> [8, 1, 1]
+
+            # final dequantized_k : 
+            # [8, slot_in_block, 64] * [8, 1, 1]           -> [8, slot_in_block, 64]
             dequantized_v = (self.v_cache[block_number, :, 0:slot_in_block, :]).to(torch.float32) * self.v_scale[block_number, :].unsqueeze(-1).unsqueeze(-1)
 
             # our dequantize_k is shape [block_number, slot_in_block, d_k] and k[i] is still [num_heads, d_k] so we unsqueeze k[i] to [num_heads, 1, d_k]
-            full_k = torch.cat([dequantized_k, k[i].unsqueeze(1)], dim=1) # shape [block_number, slot_in_block + 1, d_k]
+            full_k = torch.cat([dequantized_k, k[i].unsqueeze(1)], dim=1) 
+            # dequantized_k =  [8, slot_in_block, 64] and k[i] = [total_tokens, 8, 64][i] = [8, 64].unsqueeze(1) -> [8, 1, 64]
+            # therefore,  full_k = torch.cat([8, slot_in_block, 64] , [8, 1, 64], dim=1)
+            # (torch.cat joins the tensors in a way that every other dimension must match and the dimension to be concatenated will be different), and dim=1 means we are concatenating along the 1st index of that tensor which is the middle one)
+            # full_k = torch.cat([8, slot_in_block, 64] , [8, 1, 64], dim=1) = [8, slot_in_block+1, 64]
             full_v = torch.cat([dequantized_v, v[i].unsqueeze(1)], dim=1)
 
-            # now lets get the scale pre head
+
+            # lets get the scale per head now that we got the tensors
             abs_full_k_intermediate_step = torch.max(torch.abs(full_k), dim=2).values
-            # again reducing it more to num_heads shape. currently itthe abs_full_k_intermediate_step is [num_heads, slot_in_block] and we have to make it [num_heads]
+            # shape breakdown : torch.max(torch.abs(full_k), dim=2) -> full_k = [8, slot_in_block+1, 64]
+            # torch.abs will output the same tensor with just all +ve values
+            # torch.max([8, slot_in_block+1, 64], dim=2)
+            # finding the maximum value along that 64 index (the numbers in our pages of the books)
+            # therefore,  we get torch.max([8, slot_in_block+1, 64], dim=2) = [8, slot_in_block+1]
+            # abs_full_k_intermediate_step = [8, slot_in_block+1]
+
+
+            # again reducing it more to num_heads shape. currently itthe abs_full_k_intermediate_step is [num_heads, slot_in_block+1] and we have to make it [num_heads]
             k_scale_new = torch.max(abs_full_k_intermediate_step, dim=1).values / 127
+            # k_scale_new = [8]
 
             abs_full_v_intermediate_step = torch.max(torch.abs(full_v), dim=2).values
             v_scale_new = torch.max(abs_full_v_intermediate_step, dim=1).values / 127
 
             # requantize -> for symmetric it's roud(value/scale)
             quantized_k = torch.clamp(torch.round(full_k/k_scale_new.unsqueeze(-1).unsqueeze(-1)), -127,127).to(torch.int8)
+            # k_scale_new.unsqueeze(-1).unsqueeze(-1) = [8] -> [8,1] -> [8,1,1]
+            # full_k / k_scale_new = [8, slot_in_block+1, 64]  / [8, 1, 1] -> [8, slot_in_block+1, 64]
+            # torch.round([8, slot_in_block+1, 64]) -> rounds the values to the nearest integers
+            # torch.clamp([8, slot_in_block+1, 64], -127, 127) -> rescales the value in -127 to 127 range
+
+
             quantized_v = torch.clamp(torch.round(full_v/v_scale_new.unsqueeze(-1).unsqueeze(-1)), -127,127).to(torch.int8)
 
             # writing the scale back into scale buffers. k_scale is [num_blocks, num_heads] and k_scake_new/v_scale_new is [num_heads] so we index into that particular block_number in kscale and vscale

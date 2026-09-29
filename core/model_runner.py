@@ -102,7 +102,7 @@ class Engine:
                 offset.append(offset_cnt) # adding the offset_cnt num to offset and then we increase it (see below)
                 offset_cnt = offset_cnt + num_new_token # increasing the count for the next seq's starting pos to be recorded
                 pos_seq_id.extend([seq.seq_id] * num_new_token) # extend repeats the number n, m times. so extend(n * m) -> [n, n, n.... m+1]
-                position_ids.extend(range(len(seq.token_ids))) # this is also each token's position  within it's own sequence -> we are using this for positional encoding
+                position_ids.extend(range(len(seq.token_ids))) # this is also each token's position  within it's own sequence -> we are using this for positional encoding and alos  used for kv cache
                 kv_len_per_seq.append(num_new_token)
                 flat_tokens.extend(seq.prompt_token_ids) # finally appending the token ids to the flat tokens list
 
