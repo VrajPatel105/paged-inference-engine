@@ -171,21 +171,27 @@ class MultiHeadAttention(nn.Module):
 
 
         # 4. num_blocks_per_seq, derived from block_table via sequence_id (correct order)
+        # this gives us how much number of block does  each sequence have as of now
         num_blocks_per_seq = []
         for seq_id in sequence_id:
             num_blocks_per_seq.append(len(block_table[seq_id.item()]))
-        num_blocks_per_seq = torch.tensor(num_blocks_per_seq, dtype=torch.int32, device=q.device)
+        num_blocks_per_seq = torch.tensor(num_blocks_per_seq, dtype=torch.int32, device=q.device) # converting the python list to a tensor
         
 
         # 5. Pad flat Q into [num_sequences, num_heads, max_q_len, head_dim]
         max_q_len = int(length.max().item())
-        Q_padded = torch.zeros(num_sequences, self.num_heads, max_q_len, self.d_k, device=q.device, dtype=q.dtype)
+        Q_padded = torch.zeros(num_sequences, self.num_heads, max_q_len, self.d_k, device=q.device, dtype=q.dtype) # making an empty 4d tensor that will be sent to fa 2 kernel
 
         for k_idx in range(num_sequences):
             start = offset[k_idx].item()
             this_len = length[k_idx].item()
             # q[start:start+this_len] is [this_len, num_heads, d_k] -> needs [num_heads, this_len, d_k]
             Q_padded[k_idx, :, :this_len, :] = q[start:start + this_len].transpose(0, 1)
+                #  q[start:start + this_len].transpose(0, 1) -> q[this_len, 8, 64].transpose(0,1) -> [8, this_len, 64]
+                # Q_padded [k_idx, :, :this_len, :] = [8, this_len, 64]  (k_idx is gone)
+                # shapes match -> copy fills row k_idx's first this_len slots
+                # Q_padded itself stays [num_sequences, 8, max_q_len, 64]
+
 
         # due to mismatch in blocktable, we have it in py dict and kernel expects it in iterable cuda tensor 
         # Convert block_table (dict of Python lists) into a padded CUDA tensor for the kernel
@@ -197,6 +203,7 @@ class MultiHeadAttention(nn.Module):
             seq_id_val = seq_id.item()
             blocks_for_seq = block_table[seq_id_val]
             block_table_tensor[k_idx, :len(blocks_for_seq)] = torch.tensor(blocks_for_seq, dtype=torch.int32, device=q.device)
+            # this  whole step just converts the block table into tensor of shape [num_sequences, max_blocks_this_step]
 
 
         # 6. Kernel call : K/V come from the pool (self.k_cache/self.v_cache), not from this step's k/v directly
