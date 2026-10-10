@@ -94,7 +94,8 @@ def flash_attention_kernel(
         # now we replace the above with padding + causal mask together 
 
         padding_ok = offs_n[None, :] < remaining_for_this_block
-        causal_ok = offs_m[:, None] >= j * block_size + offs_n
+        q_pos = (kv_len_val - q_len_val) + offs_m
+        causal_ok = q_pos[:, None] >= j * block_size + offs_n[None, :]
         mask = padding_ok & causal_ok
         S = tl.where(mask, S, float('-inf'))
         # compute the running vars 
@@ -155,8 +156,8 @@ def flash_attention_forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, q
     flash_attention_kernel[grid](
             Q, K, V, O, L,
             Q.stride(0), Q.stride(1), Q.stride(2), Q.stride(3),
-            K.stride(0), K.stride(2), K.stride(1), K.stride(3),
-            V.stride(0), V.stride(2), V.stride(1), V.stride(3),
+            K.stride(0), K.stride(1), K.stride(2), K.stride(3),
+            V.stride(0), V.stride(1), V.stride(2), V.stride(3),
             O.stride(0), O.stride(1), O.stride(2), O.stride(3),
             L.stride(0), L.stride(1), L.stride(2),
             block_table, num_blocks_per_seq,
