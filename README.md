@@ -43,7 +43,7 @@ Throughput in tokens per second:
 | 8 | 252 | 297 | 493 | 6,667 |
 | 16 | 248 | 295 | 753 | 13,058 |
 | 32 | 251 | 295 | 1,030 | 23,247 |
-
+ 
 The two HF baselines handle requests one at a time, so part of my engine's lead over them is just batching. vLLM batches too, which makes it the fair comparison.
 
 What the numbers say:
