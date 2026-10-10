@@ -16,3 +16,4 @@ venv/
 *.safetensors
 wandb/
 *.pkl
+*.json
